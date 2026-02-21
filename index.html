@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b0f14" />
+  <title>Warrior Progression</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <h1>Warrior Progression</h1>
+      <button id="installBtn" class="ghost hidden">Install</button>
+    </header>
+
+    <main>
+      <section id="home" class="tab active"></section>
+      <section id="machines" class="tab"></section>
+      <section id="session" class="tab"></section>
+      <section id="progress" class="tab"></section>
+      <section id="settings" class="tab"></section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button data-tab="home" class="active">Home</button>
+      <button data-tab="machines">Machines</button>
+      <button data-tab="session">Session</button>
+      <button data-tab="progress">Progress</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </div>
+
+  <dialog id="machineDialog">
+    <form id="machineForm" method="dialog" class="dialog-body">
+      <h3 id="machineDialogTitle">Add Machine</h3>
+      <input type="hidden" id="machineId" />
+      <label>Name<input id="machineName" required placeholder="Leg Press" /></label>
+      <label>Streak Requirement<input id="machineStreak" type="number" min="1" value="3" required /></label>
+      <label>Current Setup (one per line: weight|rounds|minRep|maxRep)
+        <textarea id="machineCurrent" rows="4" placeholder="9 plates|1|6|12"></textarea>
+      </label>
+      <label>Next Setup (one per line: weight|rounds|minRep|maxRep)
+        <textarea id="machineNext" rows="4" placeholder="10 plates|1|6|12"></textarea>
+      </label>
+      <label><input id="machineAuto" type="checkbox" checked /> Auto-advance</label>
+      <label>Photo<input id="machinePhoto" type="file" accept="image/*" /></label>
+      <div class="actions">
+        <button value="cancel" type="button" id="closeMachineDialog">Cancel</button>
+        <button value="default" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="sessionDialog">
+    <form id="sessionForm" method="dialog" class="dialog-body">
+      <h3 id="sessionTitle"></h3>
+      <div id="sessionRequired"></div>
+      <label>Date<input id="sessionDate" type="date" /></label>
+      <label>Notes<textarea id="sessionNotes" rows="3" placeholder="Optional session notes"></textarea></label>
+      <label>Photo<input id="sessionPhoto" type="file" accept="image/*" /></label>
+      <div class="actions split">
+        <button type="button" id="noBtn" class="danger">NO</button>
+        <button type="button" id="yesBtn" class="success">YES</button>
+      </div>
+      <button type="button" id="closeSessionDialog">Close</button>
+    </form>
+  </dialog>
+
+  <div id="toast"></div>
+  <canvas id="confetti" class="overlay"></canvas>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
