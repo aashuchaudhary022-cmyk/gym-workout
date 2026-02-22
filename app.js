@@ -1,7 +1,11 @@
 const state = {
   machines: [],
   sessions: [],
+  workouts: [],
+  workoutHistory: [],
   selectedMachineId: null,
+  activeWorkout: null,
+  syncQueue: [],
   deferredPrompt: null,
 };
 
@@ -20,7 +24,12 @@ function load() {
     const parsed = JSON.parse(raw);
     state.machines = parsed.machines || [];
     state.sessions = parsed.sessions || [];
+    state.workouts = parsed.workouts || [];
+    state.workoutHistory = parsed.workoutHistory || [];
+    state.activeWorkout = parsed.activeWorkout || null;
+    state.syncQueue = parsed.syncQueue || [];
     state.selectedMachineId = state.machines[0]?.id || null;
+    normalizeState();
   } else {
     seed();
   }
@@ -40,7 +49,19 @@ function seed() {
     levelHistory: [{ date: fmtDate(), level: 1 }],
   }];
   state.selectedMachineId = state.machines[0].id;
+  state.workouts = [{ id: crypto.randomUUID(), name: 'Default Workout', machineIds: [state.machines[0].id] }];
+  state.workoutHistory = [];
+  state.syncQueue = [];
   save();
+}
+
+
+function normalizeState() {
+  if (!state.workouts.length && state.machines.length) {
+    state.workouts = [{ id: crypto.randomUUID(), name: 'Default Workout', machineIds: state.machines.map(m => m.id) }];
+  }
+  state.workouts = state.workouts.map(w => ({ ...w, machineIds: (w.machineIds || []).filter(id => state.machines.some(m => m.id === id)) }));
+  if (state.activeWorkout && !state.workouts.find(w => w.id === state.activeWorkout.workoutId)) state.activeWorkout = null;
 }
 
 function parseSetup(text) {
@@ -111,17 +132,144 @@ function renderSession() {
   const machine = state.machines.find(m => m.id === state.selectedMachineId) || state.machines[0];
   if (!machine) return $('#session').innerHTML = '<div class="card">Add a machine first.</div>';
   state.selectedMachineId = machine.id;
+  const activeWorkout = state.activeWorkout;
   $('#session').innerHTML = `
     <div class="card">
       <h3>Log Session</h3>
+      <button id="startWorkoutBtn">▶ Start Workout</button>
+      <small>Run all assigned machines and track progress in one flow.</small>
+      <label>Workout Template
+        <select id="workoutSelect">${state.workouts.map(w => `<option value="${w.id}">${w.name} (${w.machineIds.length})</option>`).join('')}</select>
+      </label>
+      <div class="actions" style="justify-content:flex-start">
+        <button id="newWorkout">+ New</button><button id="editWorkout">Edit</button><button id="upWorkout">↑</button><button id="downWorkout">↓</button><button id="deleteWorkout" class="danger">Delete</button>
+      </div>
       <select id="machineSelect">${state.machines.map(m => `<option value="${m.id}" ${m.id === machine.id ? 'selected' : ''}>${m.name}</option>`).join('')}</select>
       <p>Required today: ${setupText(machine.currentSetup)}</p>
       <button id="startSession">Open YES / NO</button>
     </div>
+    ${activeWorkout ? renderActiveWorkout(activeWorkout) : ''}
     <div class="card"><h4>Recent</h4>${state.sessions.filter(s=>s.machineId===machine.id).slice(-5).reverse().map(s=>`<p>${s.date} - ${s.result}</p>`).join('') || 'No sessions yet.'}</div>
   `;
   $('#machineSelect').onchange = (e) => { state.selectedMachineId = e.target.value; renderSession(); };
   $('#startSession').onclick = () => openSessionDialog(machine.id);
+  const workoutSelect = $('#workoutSelect');
+  if (workoutSelect) {
+    workoutSelect.value = localStorage.getItem('selectedWorkout') || state.workouts[0]?.id;
+    workoutSelect.onchange = (e) => localStorage.setItem('selectedWorkout', e.target.value);
+  }
+  $('#startWorkoutBtn').onclick = startWorkout;
+  $('#newWorkout').onclick = createWorkout;
+  $('#editWorkout').onclick = editWorkout;
+  $('#deleteWorkout').onclick = deleteWorkout;
+  $('#upWorkout').onclick = () => moveWorkout(-1);
+  $('#downWorkout').onclick = () => moveWorkout(1);
+  document.querySelectorAll('[data-workout-yes]').forEach(btn => btn.onclick = () => markWorkoutItem(btn.dataset.workoutYes, 'YES'));
+  document.querySelectorAll('[data-workout-no]').forEach(btn => btn.onclick = () => markWorkoutItem(btn.dataset.workoutNo, 'NO'));
+}
+
+function renderActiveWorkout(activeWorkout) {
+  const done = activeWorkout.items.filter(i => i.result).length;
+  return `<div class="card" id="activeWorkoutCard">
+    <h3>Workout in Progress (${done}/${activeWorkout.items.length})</h3>
+    ${activeWorkout.items.map((item, idx) => {
+      const machine = state.machines.find(m => m.id === item.machineId);
+      if (!machine) return '';
+      return `<div class="card workout-item ${item.result ? 'done' : ''}" id="workout-item-${item.machineId}">
+        <b>${idx + 1}. ${machine.name}</b>
+        <p><small>Goal: ${setupText(machine.currentSetup)} | Next: ${setupText(machine.nextSetup)} | 🔥 ${machine.streak}/${machine.streakRequirement}</small></p>
+        <label>Progress<input id="progress-${item.machineId}" value="${item.progress || ''}" placeholder="actual weight / reps / rounds" /></label>
+        <label>Note<textarea id="note-${item.machineId}" rows="2">${item.notes || ''}</textarea></label>
+        <label>Photo<input id="photo-${item.machineId}" type="file" accept="image/*" /></label>
+        <div class="actions split"><button data-workout-no="${item.machineId}" class="danger">NO</button><button data-workout-yes="${item.machineId}" class="success">YES</button></div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function selectedWorkout() {
+  const id = localStorage.getItem('selectedWorkout') || state.workouts[0]?.id;
+  return state.workouts.find(w => w.id === id);
+}
+
+function startWorkout() {
+  const workout = selectedWorkout();
+  if (!workout) return toast('Create a workout first');
+  state.activeWorkout = { id: crypto.randomUUID(), workoutId: workout.id, date: fmtDate(), items: workout.machineIds.map(machineId => ({ machineId, result: null, progress: '', notes: '', photo: '' })) };
+  render();
+  toast('Workout started');
+}
+
+function collectWorkoutIds(defaultIds = []) {
+  const choices = state.machines.map(m => `${m.id.slice(0, 6)}=${m.name}`).join('\n');
+  const raw = prompt(`Machine IDs (comma-separated):\n${choices}`, defaultIds.map(id => id.slice(0, 6)).join(','));
+  if (raw === null) return null;
+  return raw.split(',').map(v => v.trim()).filter(Boolean).map(v => state.machines.find(m => m.id.startsWith(v) || m.id === v)?.id).filter(Boolean);
+}
+
+function createWorkout() {
+  const name = prompt('Workout name?');
+  if (!name) return;
+  const machineIds = collectWorkoutIds(state.machines.map(m => m.id));
+  if (!machineIds) return;
+  state.workouts.push({ id: crypto.randomUUID(), name, machineIds: machineIds.length ? machineIds : state.machines.map(m => m.id) });
+  render();
+}
+
+function editWorkout() {
+  const workout = selectedWorkout();
+  if (!workout) return;
+  const name = prompt('Rename workout', workout.name);
+  if (!name) return;
+  const machineIds = collectWorkoutIds(workout.machineIds);
+  if (!machineIds) return;
+  workout.name = name;
+  workout.machineIds = machineIds;
+  render();
+}
+
+function deleteWorkout() {
+  const workout = selectedWorkout();
+  if (!workout) return;
+  if (!confirm(`Delete ${workout.name}?`)) return;
+  state.workouts = state.workouts.filter(w => w.id !== workout.id);
+  normalizeState();
+  render();
+}
+
+function moveWorkout(delta) {
+  const workout = selectedWorkout();
+  if (!workout) return;
+  const idx = state.workouts.findIndex(w => w.id === workout.id);
+  const next = idx + delta;
+  if (next < 0 || next >= state.workouts.length) return;
+  [state.workouts[idx], state.workouts[next]] = [state.workouts[next], state.workouts[idx]];
+  render();
+}
+
+async function markWorkoutItem(machineId, result) {
+  const item = state.activeWorkout?.items.find(i => i.machineId === machineId);
+  if (!item) return;
+  if (result === 'NO' && !confirm('This resets streak progression for this machine. Continue?')) return;
+  item.progress = $(`#progress-${machineId}`)?.value || '';
+  item.notes = $(`#note-${machineId}`)?.value || '';
+  const file = $(`#photo-${machineId}`)?.files?.[0];
+  item.photo = file ? await toDataUrl(file) : item.photo;
+  item.result = result;
+  await logSession(machineId, result, { notes: item.notes, photo: item.photo, progress: item.progress, closeDialog: false });
+  const current = document.getElementById(`workout-item-${machineId}`);
+  current?.classList.add('flash');
+  setTimeout(() => current?.classList.remove('flash'), 600);
+  const next = state.activeWorkout.items.find(i => !i.result);
+  if (next) document.getElementById(`workout-item-${next.machineId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (!next) {
+    state.workoutHistory.push({ ...state.activeWorkout, completedAt: new Date().toISOString() });
+    queueSync({ type: 'workout_complete', payload: state.activeWorkout });
+    state.activeWorkout = null;
+    celebrate();
+    toast('Workout complete ✅');
+  }
+  render();
 }
 
 function renderProgress() {
@@ -145,6 +293,7 @@ function renderProgress() {
       <div class="kpi"><b>${levelUps}</b><span>Total level-ups</span></div>
       <div class="kpi"><b>${Math.round((yes/Math.max(1,yes+no))*100)}%</b><span>Consistency</span></div>
     </div>
+    <div class="card"><h4>Workout history</h4><p>${state.workoutHistory.length} completed workouts</p></div>
     <div class="card"><h4>Calendar</h4><div class="calendar">${calendarCells(machine.id, year)}</div></div>
   `;
   $('#progressMachine').onchange = e => { state.selectedMachineId = e.target.value; renderProgress(); };
@@ -214,27 +363,31 @@ function openSessionDialog(machineId) {
   $('#sessionNotes').value = '';
   $('#sessionPhoto').value = '';
   $('#yesBtn').onclick = async () => logSession(machineId, 'YES');
-  $('#noBtn').onclick = async () => logSession(machineId, 'NO');
+  $('#noBtn').onclick = async () => { if (confirm('This will reset streak progression for this machine. Continue?')) await logSession(machineId, 'NO'); };
   $('#sessionDialog').showModal();
 }
 $('#closeSessionDialog').onclick = () => $('#sessionDialog').close();
 
-async function logSession(machineId, result) {
-  const date = $('#sessionDate').value || fmtDate();
-  const notes = $('#sessionNotes').value;
-  const file = $('#sessionPhoto').files[0];
-  const photo = file ? await toDataUrl(file) : '';
+async function logSession(machineId, result, opts = {}) {
+  const date = opts.date || $('#sessionDate')?.value || fmtDate();
+  const notes = opts.notes ?? $('#sessionNotes')?.value ?? '';
+  const file = $('#sessionPhoto')?.files?.[0];
+  const photo = opts.photo ?? (file ? await toDataUrl(file) : '');
+  const progress = opts.progress || '';
   const machine = state.machines.find(m => m.id === machineId);
   const existing = state.sessions.find(s => s.machineId === machineId && sameDay(s.date, date));
   if (existing) {
     if (result === 'YES' && existing.result === 'YES') return toast('Only one YES per machine per day');
-    Object.assign(existing, { result, notes, photo });
+    Object.assign(existing, { result, notes, photo, progress });
   } else {
-    state.sessions.push({ id: crypto.randomUUID(), machineId, date, result, notes, photo });
+    state.sessions.push({ id: crypto.randomUUID(), machineId, date, result, notes, photo, progress });
   }
   updateStreak(machine, date, result);
-  $('#sessionDialog').close();
-  render();
+  queueSync({ type: 'session', payload: { machineId, date, result, notes, progress } });
+  if (opts.closeDialog !== false) {
+    $('#sessionDialog').close();
+    render();
+  }
 }
 
 function updateStreak(machine, date, result) {
@@ -332,8 +485,26 @@ async function importData(e) {
   const parsed = JSON.parse(text);
   state.machines = parsed.machines || [];
   state.sessions = parsed.sessions || [];
+  state.workouts = parsed.workouts || [];
+  state.workoutHistory = parsed.workoutHistory || [];
+  state.activeWorkout = parsed.activeWorkout || null;
+  state.syncQueue = parsed.syncQueue || [];
   state.selectedMachineId = state.machines[0]?.id || null;
+  normalizeState();
   save(); render(); toast('Imported');
+}
+
+function queueSync(event) {
+  state.syncQueue.push({ ...event, queuedAt: new Date().toISOString() });
+  flushSyncQueue();
+}
+
+async function flushSyncQueue() {
+  if (!navigator.onLine || !state.syncQueue.length) return;
+  try {
+    const res = await fetch('/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ events: state.syncQueue }) });
+    if (res.ok) state.syncQueue = [];
+  } catch (_) {}
 }
 
 const toDataUrl = (file) => new Promise((resolve) => {
@@ -367,5 +538,6 @@ $('#installBtn').onclick = async () => {
 };
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+window.addEventListener('online', flushSyncQueue);
 
 load(); nav(); render();
